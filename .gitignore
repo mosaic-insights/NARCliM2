@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Large/local climate data and outputs
+NARCliM Data/
+Climate_Indicies/
+Climate_Indices/
+Diagnostics/
+*.nc
+*.nc4
+*.tif
+*.tiff
+*.gpkg
+
+# Keep small example/test fixtures if intentionally committed by placing
+# them under tests/data/ and force-adding them when appropriate.

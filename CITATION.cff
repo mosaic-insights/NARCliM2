@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "NARCliM2 Workflow"
+type: software
+authors:
+  - family-names: "Khaledi"
+    given-names: "Jabbar"
+version: 0.2.0
+date-released: 2026-08-21
+abstract: "Python workflow for NARCliM2.0 THREDDS data access, climate-model uncertainty analysis, spatial summarisation, derived storm indicators, and mapping."
+keywords:
+  - NARCliM
+  - climate risk
+  - geospatial analysis
+  - THREDDS
+  - Python
