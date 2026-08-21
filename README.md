@@ -123,11 +123,12 @@ The spatial-summary outputs also contain a representative `time_horizon_year`, f
 
 ## Installation
 
-Clone the repository and install it in editable mode:
+Clone the repository and install it in editable mode: 
 
 ```bash
-git clone <YOUR-REPOSITORY-URL>
-cd narclim-workflow
+# create a folder named NARCliM2 and then clone the project into that folder
+git clone https://github.com/mosaic-insights/NARCliM2.git
+cd C:\GitHub\NARCliM2
 python -m pip install -e .
 ```
 
