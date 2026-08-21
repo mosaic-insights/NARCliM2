@@ -28,7 +28,7 @@ The package includes functionality for:
 - raster, GeoPackage, CSV, and map outputs;
 - spatial summarisation for planning zones, land use, administrative boundaries, catchments, sites, assets, and other spatial datasets.
 
-### Design philosophy
+### Design
 
 **Reproducibility** — climate-data processing is implemented as repeatable Python workflows rather than manual GIS steps.
 
@@ -765,6 +765,6 @@ For a public release, also choose and add an appropriate open-source `LICENSE` a
 
 If you use or adapt this package in a project, please cite the package and developer. A `CITATION.cff` file is included to make GitHub citation metadata available.
 
-**Developer:** Jabbar Khaledi  
+**Developer:** Jabbar Khaledi  (Email: jabbarkhaledi88@gmail.com)
 **Primary language:** Python  
 **Application:** NARCliM2.0 climate-data processing, climate-model uncertainty analysis, climate-risk assessment, and geospatial analysis
