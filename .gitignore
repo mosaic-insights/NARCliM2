@@ -1,4 +1,7 @@
+# =============================================================================
 # Python
+# =============================================================================
+
 __pycache__/
 *.py[cod]
 *.pyd
@@ -7,40 +10,85 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+
+# =============================================================================
 # Virtual environments
+# =============================================================================
+
 .venv/
 venv/
 env/
 
+
+# =============================================================================
 # Packaging
+# =============================================================================
+
 build/
 dist/
 *.egg-info/
 
+
+# =============================================================================
 # Jupyter
+# =============================================================================
+
 .ipynb_checkpoints/
 
+
+# =============================================================================
 # IDE / OS
+# =============================================================================
+
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
 
+
+# =============================================================================
 # Local environment / secrets
+# =============================================================================
+
 .env
 .env.*
 !.env.example
 
-# Large/local climate data and outputs
+
+# =============================================================================
+# Local climate data and generated outputs
+# =============================================================================
+
+# Downloaded/subset NARCliM data
 NARCliM Data/
+
+# Derived climate-index and time-series outputs
 Climate_Indicies/
 Climate_Indices/
+
+# Diagnostic outputs
 Diagnostics/
+
+# Flood-hazard outputs
+Flood_Hazard/
+
+
+# =============================================================================
+# Large geospatial / climate files
+# =============================================================================
+
 *.nc
 *.nc4
 *.tif
 *.tiff
 *.gpkg
 
-# Keep small example/test fixtures if intentionally committed by placing
-# them under tests/data/ and force-adding them when appropriate.
+
+# =============================================================================
+# Test/example data
+# =============================================================================
+
+# Small example/test fixtures may be intentionally committed under
+# tests/data/. If their extensions are ignored above, force-add them:
+#
+# git add -f tests/data/example.nc

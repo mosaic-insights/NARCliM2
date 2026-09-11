@@ -6,6 +6,7 @@ from typing import Iterable
 import traceback
 
 import pandas as pd
+import numpy as np
 import xarray as xr
 
 from .catalog import build_catalog_url, read_catalog, select_files_for_window
@@ -86,6 +87,46 @@ def _storm_index_name(
         )
     )
 
+def _netcdf_safe_attrs(
+    attrs: dict,
+) -> dict:
+    """
+    Convert dataset attributes into values that can safely be written
+    by the netCDF4 backend.
+
+    NetCDF attributes do not support Python/NumPy Boolean values
+    directly, so Booleans are converted to integers:
+
+        True  -> 1
+        False -> 0
+    """
+
+    safe_attrs = {}
+
+    for key, value in attrs.items():
+
+        if isinstance(
+            value,
+            (bool, np.bool_),
+        ):
+            safe_attrs[
+                key
+            ] = int(value)
+
+        elif isinstance(
+            value,
+            Path,
+        ):
+            safe_attrs[
+                key
+            ] = str(value)
+
+        else:
+            safe_attrs[
+                key
+            ] = value
+
+    return safe_attrs
 
 def _derive_storm_days(
     ds: xr.Dataset,
@@ -697,7 +738,7 @@ def run_workflow(
                                                     temporal_ds,
                                                     geom,
                                                     data_var,
-                                                    verbose=verbose,
+                                                    verbose=False,
                                                 )
 
                                             else:
@@ -868,20 +909,27 @@ def run_workflow(
                                                         )
 
                                                         source_to_save.attrs.update(
-                                                            {
-                                                                "source_catalog":
-                                                                    catalog_url,
-                                                                "source_opendap":
-                                                                    source_file.opendap_url,
-                                                                "requested_start_year":
-                                                                    start_year,
-                                                                "requested_end_year":
-                                                                    end_year,
-                                                                "feature_id":
-                                                                    feature.feature_id,
-                                                                "saved_as_original_storm_source":
-                                                                    True,
-                                                            }
+                                                            _netcdf_safe_attrs(
+                                                                {
+                                                                    "source_catalog":
+                                                                        catalog_url,
+
+                                                                    "source_opendap":
+                                                                        source_file.opendap_url,
+
+                                                                    "requested_start_year":
+                                                                        start_year,
+
+                                                                    "requested_end_year":
+                                                                        end_year,
+
+                                                                    "feature_id":
+                                                                        feature.feature_id,
+
+                                                                    "saved_as_original_storm_source":
+                                                                        True,
+                                                                }
+                                                            )
                                                         )
 
                                                         source_temp_path = (
@@ -939,24 +987,14 @@ def run_workflow(
                                                         }
                                                     )
 
-                                                    _log(
-                                                        "[STORM SOURCE SAVED] "
-                                                        f"{source_output_path}",
-                                                        verbose=verbose,
-                                                    )
+                                                    #_log("[STORM SOURCE SAVED] " f"{source_output_path}", verbose=verbose,)
 
                                                 # ----------------------------------------------------------
                                                 # DERIVE ANNUAL STORM-DAY INDEX
                                                 # ----------------------------------------------------------
 
-                                                _log(
-                                                    "[DERIVED INDEX] "
-                                                    "Calculating annual number of days "
-                                                    "with daily maximum wind speed > "
-                                                    f"{resolved_storm_threshold:g} km/h "
-                                                    f"as {derived_storm_name}...",
-                                                    verbose=verbose,
-                                                )
+                                                #_log("[DERIVED INDEX] Calculating annual number of days with daily maximum wind speed > "
+                                                    #f"{resolved_storm_threshold:g} km/h " f"as {derived_storm_name}...",verbose=verbose,)
 
                                                 out_ds = _derive_storm_days(
                                                     out_ds,

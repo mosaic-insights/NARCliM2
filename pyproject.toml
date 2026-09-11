@@ -2,28 +2,38 @@
 requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
+
 [project]
 name = "narclim-workflow"
-version = "0.2.0"
-description = "Reproducible NARCliM2.0 THREDDS download, climate-model uncertainty, spatial-summary, storm-index, and mapping workflow."
+version = "0.3.0"
+description = "Reproducible NARCliM2.0 climate-data download, uncertainty, spatial-summary, time-series, storm-hazard, flood-hazard, and mapping workflow."
 readme = "README.md"
 requires-python = ">=3.11"
+
 authors = [
     { name = "Jabbar Khaledi" },
 ]
+
 keywords = [
     "NARCliM",
     "climate",
     "climate-risk",
+    "climate-change",
     "geospatial",
     "GIS",
     "THREDDS",
     "NetCDF",
     "xarray",
+    "rainfall",
+    "temperature",
+    "flood",
+    "storm",
     "raster",
 ]
+
 dependencies = [
     "requests>=2.31",
+    "beautifulsoup4>=4.12",
     "pandas>=2.1",
     "numpy>=1.26",
     "xarray>=2024.1",
@@ -36,6 +46,7 @@ dependencies = [
     "matplotlib>=3.8",
 ]
 
+
 [project.optional-dependencies]
 dev = [
     "jupyter>=1.0",
@@ -43,11 +54,14 @@ dev = [
     "ruff>=0.6",
 ]
 
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
 
 [tool.ruff]
 line-length = 100
