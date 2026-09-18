@@ -1,4 +1,4 @@
-from __future__ import annotations
+
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +19,7 @@ from rasterio.crs import CRS as RasterioCRS
 from rasterio.features import rasterize
 from shapely.geometry import Point, Polygon
 
-UNCERTAINTY_CODE_VERSION = "2026-08-21-storm-precision-v7"
+UNCERTAINTY_CODE_VERSION = "2026-09-18-baseline-change-v8"
 
 @dataclass(frozen=True)
 class ModelLayer:
@@ -1663,9 +1663,13 @@ def _combine_source_files_for_model(
 
 def _calculate_ensemble_statistics(
     model_layers: list[ModelLayer],
+    *,
+    include_mean: bool = True,
 ) -> dict[str, xr.DataArray]:
     """
     Calculate pixel-wise ensemble statistics across GCM × RCM layers.
+
+    Minimum and maximum are always calculated. Ensemble mean is optional.
     """
 
     if not model_layers:
@@ -1707,11 +1711,6 @@ def _calculate_ensemble_statistics(
     )
 
     statistics = {
-        "mean": ensemble.mean(
-            dim="ensemble_member",
-            skipna=True,
-            keep_attrs=True,
-        ),
         "min": ensemble.min(
             dim="ensemble_member",
             skipna=True,
@@ -1723,6 +1722,13 @@ def _calculate_ensemble_statistics(
             keep_attrs=True,
         ),
     }
+
+    if include_mean:
+        statistics["mean"] = ensemble.mean(
+            dim="ensemble_member",
+            skipna=True,
+            keep_attrs=True,
+        )
 
     for statistic_name, statistic_data in statistics.items():
         statistic_data.attrs.update(
@@ -2134,7 +2140,6 @@ def _ensemble_rasters_to_points(
     """
 
     required_statistics = {
-        "mean",
         "min",
         "max",
     }
@@ -2158,11 +2163,12 @@ def _ensemble_rasters_to_points(
     reference_crs = None
     reference_shape = None
 
-    for statistic in (
-        "mean",
-        "min",
-        "max",
-    ):
+    statistics_to_read = ["min", "max"]
+
+    if "mean" in raster_paths:
+        statistics_to_read.insert(1, "mean")
+
+    for statistic in statistics_to_read:
 
         raster_path = raster_paths[
             statistic
@@ -2256,7 +2262,6 @@ def _ensemble_rasters_to_points(
                 "start_year",
                 "end_year",
                 "mid_year",
-                "mean",
                 "min",
                 "max",
                 "longitude",
@@ -2332,57 +2337,28 @@ def _ensemble_rasters_to_points(
         )
     ]
 
+    output_data = {
+        "feature_id": str(feature_id),
+        "variable": variable,
+        "scenario": scenario,
+        "time_horizon": time_horizon,
+        "start_year": start_year,
+        "end_year": end_year,
+        "mid_year": mid_year,
+        "min": _values_for("min"),
+        "max": _values_for("max"),
+        "longitude": xs,
+        "latitude": ys,
+        "geometry": geometry,
+    }
+
+    if "mean" in arrays:
+        # Keep the historical field name for backwards compatibility when
+        # include_mean=True.
+        output_data["mean"] = _values_for("mean")
+
     return gpd.GeoDataFrame(
-        {
-
-            "feature_id":
-                str(feature_id),
-
-            "variable":
-                variable,
-
-            "scenario":
-                scenario,
-
-            "time_horizon":
-                time_horizon,
-
-            "start_year":
-                start_year,
-
-            "end_year":
-                end_year,
-
-            "mid_year":
-                mid_year,
-
-            # These three fields are the pixel-wise model-ensemble
-            # uncertainty statistics requested for the final summary.
-            "mean":
-                _values_for(
-                    "mean"
-                ),
-
-            "min":
-                _values_for(
-                    "min"
-                ),
-
-            "max":
-                _values_for(
-                    "max"
-                ),
-
-
-            "longitude":
-                xs,
-
-            "latitude":
-                ys,
-
-            "geometry":
-                geometry,
-        },
+        output_data,
         geometry="geometry",
         crs=reference_crs,
     )
@@ -2695,6 +2671,228 @@ def _scenario_window_is_valid(
 
     return True, ""
 
+
+def _write_ensemble_change_raster(
+    *,
+    scenario_path: Path,
+    baseline_path: Path,
+    output_path: Path,
+    variable: str,
+    scenario: str,
+    time_horizon: str,
+    statistic: str,
+    baseline_scenario: str,
+    baseline_time_horizon: str,
+    overwrite: bool,
+) -> Path:
+    """
+    Write pixel-wise climate change as:
+
+        scenario ensemble statistic - historical baseline ensemble statistic
+
+    Min is compared with baseline Min, Max with baseline Max, and Mean with
+    baseline Mean when mean output is requested.
+    """
+
+    if output_path.exists() and not overwrite:
+        return output_path
+
+    with rasterio.open(scenario_path) as scenario_src, rasterio.open(
+        baseline_path
+    ) as baseline_src:
+
+        if scenario_src.crs != baseline_src.crs:
+            raise ValueError(
+                "Scenario and baseline ensemble rasters have different CRS."
+            )
+
+        if scenario_src.shape != baseline_src.shape:
+            raise ValueError(
+                "Scenario and baseline ensemble rasters have different shapes."
+            )
+
+        if not scenario_src.transform.almost_equals(baseline_src.transform):
+            raise ValueError(
+                "Scenario and baseline ensemble rasters have different grid alignment."
+            )
+
+        scenario_data = scenario_src.read(1, masked=True).astype(np.float64)
+        baseline_data = baseline_src.read(1, masked=True).astype(np.float64)
+
+        combined_mask = (
+            np.ma.getmaskarray(scenario_data)
+            | np.ma.getmaskarray(baseline_data)
+        )
+
+        change = np.ma.array(
+            scenario_data.data - baseline_data.data,
+            mask=combined_mask,
+        )
+
+        nodata = scenario_src.nodata
+        if nodata is None:
+            nodata = -9999.0
+
+        output_array = np.full(
+            scenario_src.shape,
+            nodata,
+            dtype=np.float32,
+        )
+
+        valid = ~combined_mask
+        output_array[valid] = np.round(
+            change.data[valid],
+            _output_decimals(variable),
+        ).astype(np.float32)
+
+        profile = scenario_src.profile.copy()
+        profile.update(
+            dtype="float32",
+            nodata=nodata,
+            compress="deflate",
+            predictor=3,
+            tiled=True,
+            BIGTIFF="IF_SAFER",
+        )
+
+        tags = scenario_src.tags()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_suffix(".tmp.tif")
+    temporary_path.unlink(missing_ok=True)
+
+    with rasterio.open(temporary_path, "w", **profile) as destination:
+        destination.write(output_array, 1)
+        destination.set_band_description(
+            1,
+            f"{variable}_change_{statistic}",
+        )
+
+        tags.update(
+            {
+                "variable": str(variable),
+                "scenario": str(scenario),
+                "time_horizon": str(time_horizon),
+                "ensemble_stat": str(statistic),
+                "change_type": "scenario_minus_baseline",
+                "baseline_scenario": str(baseline_scenario),
+                "baseline_time_horizon": str(baseline_time_horizon),
+                "scenario_raster": scenario_path.name,
+                "baseline_raster": baseline_path.name,
+            }
+        )
+
+        destination.update_tags(**tags)
+
+    temporary_path.replace(output_path)
+    return output_path
+
+
+def _add_baseline_change_to_ensemble_points(
+    ensemble_points: gpd.GeoDataFrame,
+    *,
+    include_mean: bool,
+    baseline_scenario: str,
+    baseline_time_horizon: str,
+) -> gpd.GeoDataFrame:
+    """
+    Add baseline and scenario-minus-baseline fields to ensemble point outputs.
+
+    Matching is performed independently by:
+        variable × feature_id × pixel_id/location
+
+    Baseline records themselves receive a change of zero.
+    """
+
+    if ensemble_points.empty:
+        return ensemble_points
+
+    result = ensemble_points.copy()
+
+    # Build a stable spatial key from the fixed output-grid coordinates.
+    result["_pixel_key"] = (
+        result["longitude"].round(6).astype(str)
+        + "_"
+        + result["latitude"].round(6).astype(str)
+    )
+
+    statistics = ["min", "max"]
+    if include_mean and "mean" in result.columns:
+        statistics.insert(1, "mean")
+
+    # time_horizon contains a readable label such as
+    # "baseline (1985-2014; mid=2000)", so use prefix matching here.
+    baseline_mask = (
+        result["scenario"].astype(str).str.lower()
+        == str(baseline_scenario).lower()
+    ) & (
+        result["time_horizon"].astype(str).str.lower().str.startswith(
+            str(baseline_time_horizon).lower()
+        )
+    )
+
+    baseline = result.loc[baseline_mask].copy()
+
+    if baseline.empty:
+        raise ValueError(
+            "No ensemble baseline records were found for "
+            f"scenario={baseline_scenario!r}, "
+            f"time_horizon={baseline_time_horizon!r}."
+        )
+
+    key_fields = [
+        "variable",
+        "feature_id",
+        "_pixel_key",
+    ]
+
+    baseline_fields = key_fields + statistics
+    baseline_lookup = baseline[baseline_fields].copy()
+
+    rename_map = {
+        statistic: f"baseline_{statistic}"
+        for statistic in statistics
+    }
+    baseline_lookup = baseline_lookup.rename(columns=rename_map)
+
+    result = result.merge(
+        baseline_lookup,
+        on=key_fields,
+        how="left",
+        validate="many_to_one",
+    )
+
+    for statistic in statistics:
+        baseline_field = f"baseline_{statistic}"
+        change_field = f"change_{statistic}"
+
+        result[change_field] = (
+            pd.to_numeric(result[statistic], errors="coerce")
+            - pd.to_numeric(result[baseline_field], errors="coerce")
+        )
+
+        for variable_name in result["variable"].dropna().unique():
+            mask = result["variable"] == variable_name
+            decimals = _output_decimals(variable_name)
+
+            result.loc[mask, baseline_field] = (
+                pd.to_numeric(
+                    result.loc[mask, baseline_field],
+                    errors="coerce",
+                ).round(decimals)
+            )
+
+            result.loc[mask, change_field] = (
+                pd.to_numeric(
+                    result.loc[mask, change_field],
+                    errors="coerce",
+                ).round(decimals)
+            )
+
+    return result.drop(columns=["_pixel_key"])
+
+
+
 def run_uncertainty_workflow(
     *,
     input_root: str | Path,
@@ -2707,6 +2905,10 @@ def run_uncertainty_workflow(
     feature_ids: list[str] | None = None,
     boundary_id_field: str | None = None,
     output_folder_name: str = "Climate_Indices",
+    include_mean: bool = True,
+    calculate_change: bool = True,
+    baseline_scenario: str = "historical",
+    baseline_time_horizon: str = "baseline",
     overwrite: bool = False,
     verbose: bool = True,
 ) -> pd.DataFrame:
@@ -2762,6 +2964,14 @@ def run_uncertainty_workflow(
     records = []
     gpkg_model_points = []
     gpkg_ensemble_points = []
+
+    # Registry used after the normal ensemble workflow to calculate
+    # scenario-minus-baseline change rasters without altering the existing
+    # temporal-average/model processing.
+    ensemble_raster_registry: dict[
+        tuple[str, str, str, str, str],
+        Path,
+    ] = {}
 
     _log("=" * 100,verbose=verbose,)
     _log("NARCliM CLIMATE-MODEL UNCERTAINTY WORKFLOW",verbose=verbose,)
@@ -2979,7 +3189,8 @@ def run_uncertainty_workflow(
 
                     try:
                         stats = _calculate_ensemble_statistics(
-                            model_layers
+                            model_layers,
+                            include_mean=include_mean,
                         )
 
                         reference_ds = reference_datasets[
@@ -3099,6 +3310,16 @@ def run_uncertainty_workflow(
                                 statistic
                             ] = output_path
 
+                            ensemble_raster_registry[
+                                (
+                                    variable,
+                                    scenario,
+                                    window,
+                                    str(feature_id),
+                                    statistic,
+                                )
+                            ] = output_path
+
                             _log(
                                 f"[OK] {output_path.name}",
                                 verbose=verbose,
@@ -3149,6 +3370,119 @@ def run_uncertainty_workflow(
                     ds.close()
 
     # ==================================================================
+    # ENSEMBLE CHANGE RASTERS
+    #
+    # Change = scenario ensemble statistic - historical baseline statistic.
+    #
+    # Minimum is compared with baseline minimum, maximum with baseline
+    # maximum, and mean with baseline mean only when include_mean=True.
+    # ==================================================================
+
+    if calculate_change:
+
+        for (
+            variable,
+            scenario,
+            window,
+            feature_id,
+            statistic,
+        ), scenario_path in sorted(
+            ensemble_raster_registry.items()
+        ):
+
+            # Baseline is the reference itself; no separate zero-change
+            # GeoTIFF is needed.
+            if (
+                str(scenario).lower() == str(baseline_scenario).lower()
+                and str(window).lower() == str(baseline_time_horizon).lower()
+            ):
+                continue
+
+            baseline_key = (
+                variable,
+                baseline_scenario,
+                baseline_time_horizon,
+                feature_id,
+                statistic,
+            )
+
+            baseline_path = ensemble_raster_registry.get(
+                baseline_key
+            )
+
+            if baseline_path is None:
+                _log(
+                    "[CHANGE SKIP] No matching baseline raster for "
+                    f"{variable} | {scenario} | {window} | "
+                    f"{feature_id} | {statistic}",
+                    verbose=verbose,
+                )
+                continue
+
+            # Read scenario period from its filename/tags only for naming.
+            with rasterio.open(scenario_path) as src:
+                scenario_tags = src.tags()
+
+            start_year = scenario_tags.get("start_year")
+            end_year = scenario_tags.get("end_year")
+
+            feature_suffix = (
+                ""
+                if str(feature_id) == "ID1"
+                else f"_{_safe_name(feature_id)}"
+            )
+
+            if start_year is not None and end_year is not None:
+                period_suffix = (
+                    f"{int(start_year)}_{int(end_year)}"
+                )
+            else:
+                period_suffix = _safe_name(window)
+
+            change_name = (
+                f"{_safe_name(variable)}_Change_"
+                f"{statistic.capitalize()}_"
+                f"{_safe_name(scenario)}_"
+                f"{period_suffix}"
+                f"{feature_suffix}.tif"
+            )
+
+            change_path = (
+                ensemble_folder
+                / change_name
+            )
+
+            _write_ensemble_change_raster(
+                scenario_path=scenario_path,
+                baseline_path=baseline_path,
+                output_path=change_path,
+                variable=variable,
+                scenario=scenario,
+                time_horizon=window,
+                statistic=statistic,
+                baseline_scenario=baseline_scenario,
+                baseline_time_horizon=baseline_time_horizon,
+                overwrite=overwrite,
+            )
+
+            records.append({
+                "status": "ensemble_change_raster_saved",
+                "variable": variable,
+                "scenario": scenario,
+                "time_window": window,
+                "gcm": None,
+                "rcm": None,
+                "feature_id": feature_id,
+                "output": str(change_path),
+                "message": "",
+            })
+
+            _log(
+                f"[CHANGE OK] {change_path.name}",
+                verbose=verbose,
+            )
+
+    # ==================================================================
     # HAZARD GEOPACKAGES
     #
     # The final pixel-wise ensemble hazard products are written to:
@@ -3196,17 +3530,39 @@ def run_uncertainty_workflow(
             crs=valid_ensemble_frames[0].crs,
         )
 
+        if calculate_change:
+            ensemble_points = _add_baseline_change_to_ensemble_points(
+                ensemble_points,
+                include_mean=include_mean,
+                baseline_scenario=baseline_scenario,
+                baseline_time_horizon=baseline_time_horizon,
+            )
+
         # --------------------------------------------------------------
         # Final attribute precision:
         #   most variables -> 1 decimal
         #   StormDaysGT*    -> 3 decimals
         # --------------------------------------------------------------
-        for climate_field in (
-            "mean",
+        climate_fields = [
             "min",
             "max",
+            "baseline_min",
+            "baseline_max",
+            "change_min",
+            "change_max",
             "value",
-        ):
+        ]
+
+        if include_mean:
+            climate_fields.extend(
+                [
+                    "mean",
+                    "baseline_mean",
+                    "change_mean",
+                ]
+            )
+
+        for climate_field in climate_fields:
             if climate_field not in ensemble_points.columns:
                 continue
 

@@ -74,7 +74,7 @@ import rasterio
 from rasterio.features import geometry_mask
 
 
-SPATIAL_SUMMARY_CODE_VERSION = "2026-08-21-storm-precision-v4"
+SPATIAL_SUMMARY_CODE_VERSION = "2026-09-18-optional-mean-change-fix-v7"
 
 SUPPORTED_GEOMETRIES = {
     "Point",
@@ -95,7 +95,7 @@ class EnsembleRasterGroup:
     time_horizon: str
     source_feature_id: str
     min_path: Path
-    mean_path: Path
+    mean_path: Path | None
     max_path: Path
 
 
@@ -539,6 +539,7 @@ def _discover_ensemble_rasters(
     scenarios: list[str] | None,
     time_horizons: list[str] | None,
     source_feature_ids: list[str] | None,
+    include_mean: bool = True,
 ) -> list[EnsembleRasterGroup]:
     if not ensemble_folder.exists():
         raise FileNotFoundError(
@@ -557,6 +558,13 @@ def _discover_ensemble_rasters(
             continue
 
         variable, scenario, time_horizon, source_feature_id, statistic = parsed
+
+        # uncertainty.py may also write pre-calculated *_Change rasters.
+        # spatial_summary.py calculates change from the original climate
+        # variable rasters itself, so do not treat those change rasters as
+        # separate climate variables here.
+        if variable.endswith("_Change"):
+            continue
 
         if variables is not None and variable not in variables:
             continue
@@ -591,7 +599,11 @@ def _discover_ensemble_rasters(
         source_feature_id,
     ), paths in sorted(grouped.items()):
 
-        missing = set(STATISTICS) - set(paths)
+        required_statistics = {"min", "max"}
+        if include_mean:
+            required_statistics.add("mean")
+
+        missing = required_statistics - set(paths)
 
         if missing:
             continue
@@ -603,15 +615,16 @@ def _discover_ensemble_rasters(
                 time_horizon=time_horizon,
                 source_feature_id=source_feature_id,
                 min_path=paths["min"],
-                mean_path=paths["mean"],
+                mean_path=paths.get("mean"),
                 max_path=paths["max"],
             )
         )
 
     if not complete_groups:
         raise ValueError(
-            "No complete ensemble min/mean/max raster groups were found "
-            "for the requested filters."
+            "No complete ensemble raster groups were found for the requested "
+            "filters. Min and Max are required; Mean is required only when "
+            "include_mean=True."
         )
 
     return complete_groups
@@ -624,11 +637,11 @@ def _validate_raster_group(
     reference_transform = None
     reference_shape = None
 
-    for path in (
-        group.min_path,
-        group.mean_path,
-        group.max_path,
-    ):
+    raster_paths = [group.min_path, group.max_path]
+    if group.mean_path is not None:
+        raster_paths.insert(1, group.mean_path)
+
+    for path in raster_paths:
         with rasterio.open(path) as src:
             if src.crs is None:
                 raise ValueError(f"Raster has no CRS:\n{path}")
@@ -757,6 +770,7 @@ def _summarise_group_for_features(
     keep_fields: list[str],
     time_windows: dict[str, tuple[int, int]] | None,
     all_touched: bool,
+    include_mean: bool = True,
 ) -> gpd.GeoDataFrame:
     raster_crs, _, _ = _validate_raster_group(group)
 
@@ -767,7 +781,7 @@ def _summarise_group_for_features(
     formatted_horizon = _format_time_horizon(
         group.time_horizon,
         time_windows,
-        raster_path=group.mean_path,
+        raster_path=group.min_path,
     )
 
     # Representative year for direct GIS/chart use.
@@ -779,7 +793,7 @@ def _summarise_group_for_features(
     time_horizon_year = _get_time_horizon_year(
         time_horizon=group.time_horizon,
         time_windows=time_windows,
-        raster_path=group.mean_path,
+        raster_path=group.min_path,
     )
 
     for position in range(len(features_original)):
@@ -794,11 +808,14 @@ def _summarise_group_for_features(
                 all_touched=all_touched,
             )
 
-            mean_value, mean_count = _polygon_spatial_mean(
-                raster_path=group.mean_path,
-                geometry=geometry,
-                all_touched=all_touched,
-            )
+            if include_mean:
+                mean_value, mean_count = _polygon_spatial_mean(
+                    raster_path=group.mean_path,
+                    geometry=geometry,
+                    all_touched=all_touched,
+                )
+            else:
+                mean_value, mean_count = np.nan, 0
 
             max_value, max_count = _polygon_spatial_mean(
                 raster_path=group.max_path,
@@ -819,10 +836,13 @@ def _summarise_group_for_features(
                 point=geometry,
             )
 
-            mean_value = _sample_point_value(
-                raster_path=group.mean_path,
-                point=geometry,
-            )
+            if include_mean:
+                mean_value = _sample_point_value(
+                    raster_path=group.mean_path,
+                    point=geometry,
+                )
+            else:
+                mean_value = np.nan
 
             max_value = _sample_point_value(
                 raster_path=group.max_path,
@@ -892,12 +912,15 @@ def _summarise_group_for_features(
                 "time_horizon_year": time_horizon_year,
                 "source_feature": group.source_feature_id,
                 "min": min_value,
-                "mean": mean_value,
+                **({"mean": mean_value} if include_mean else {}),
                 "max": max_value,
                 "n_pixels": n_pixels,
                 "geometry": original_row.geometry,
             }
         )
+
+        if include_mean:
+            record["mean"] = mean_value
 
         output_records.append(record)
 
@@ -923,6 +946,11 @@ def run_spatial_summary(
     time_windows: dict[str, tuple[int, int]] | None = None,
     keep_fields: list[str] | None = None,
     all_touched: bool = True,
+    include_mean: bool = True,
+    calculate_change: bool = True,
+    baseline_scenario: str = "historical",
+    baseline_time_horizon: str = "baseline",
+    write_feature_summary_layer: bool = True,
     overwrite: bool = True,
     verbose: bool = True,
 ) -> dict[str, Path]:
@@ -937,6 +965,13 @@ def run_spatial_summary(
     Point inputs:
         - sample the raster cell containing each point
         - assign min / mean / max directly
+
+    Optional additions:
+        - include_mean=False omits ensemble-mean values from the outputs.
+        - calculate_change=True calculates scenario minus historical-baseline
+          change for min/max and, when requested, mean.
+        - write_feature_summary_layer=True writes a wide copy of FEATURE_PATH
+          with the calculated climate-change fields. The input file is never modified.
     """
 
     feature_path = Path(feature_path)
@@ -1027,6 +1062,7 @@ def run_spatial_summary(
         scenarios=scenarios,
         time_horizons=time_horizons,
         source_feature_ids=source_feature_ids,
+        include_mean=include_mean,
     )
 
     _log(
@@ -1100,6 +1136,7 @@ def run_spatial_summary(
             keep_fields=keep_fields_final,
             time_windows=time_windows,
             all_touched=all_touched,
+            include_mean=include_mean,
         )
 
         results_by_variable.setdefault(
@@ -1107,8 +1144,9 @@ def run_spatial_summary(
             [],
         ).append(summary)
 
+        valid_field = "mean" if include_mean else "min"
         valid_count = int(
-            summary["mean"].notna().sum()
+            summary[valid_field].notna().sum()
         )
 
         _log(
@@ -1117,11 +1155,47 @@ def run_spatial_summary(
             verbose=verbose,
         )
 
+    # ==================================================================
+    # BASELINE SUMMARIES FOR CHANGE CALCULATION
+    # ==================================================================
+    # Change is defined as:
+    #     future scenario value - historical baseline value
+    #
+    # Baseline groups are discovered separately so users can request only
+    # ssp245/ssp370 and mid/long-term outputs while change calculations still
+    # have access to the historical baseline.
+    baseline_by_variable: dict[str, list[gpd.GeoDataFrame]] = {}
+
+    if calculate_change:
+        baseline_groups = _discover_ensemble_rasters(
+            ensemble_folder=ensemble_folder,
+            variables=variables,
+            scenarios=[baseline_scenario],
+            time_horizons=[baseline_time_horizon],
+            source_feature_ids=source_feature_ids,
+            include_mean=include_mean,
+        )
+
+        for baseline_group in baseline_groups:
+            baseline_summary = _summarise_group_for_features(
+                features_original=features,
+                geometry_mode=geometry_mode,
+                group=baseline_group,
+                keep_fields=keep_fields_final,
+                time_windows=time_windows,
+                all_touched=all_touched,
+                include_mean=include_mean,
+            )
+            baseline_by_variable.setdefault(
+                baseline_group.variable, []
+            ).append(baseline_summary)
+
     written: dict[str, Path] = {}
 
     # Collect non-spatial copies of every variable layer so a single CSV
     # can be written alongside the multi-layer GeoPackage.
     csv_frames: list[pd.DataFrame] = []
+    feature_change_frames: list[pd.DataFrame] = []
 
     for variable in sorted(results_by_variable):
         frames = results_by_variable[variable]
@@ -1138,17 +1212,83 @@ def run_spatial_summary(
         )
 
         # --------------------------------------------------------------
+        # Calculate change relative to the historical baseline.
+        # Matching is by input feature ID and source feature ID.
+        # --------------------------------------------------------------
+        if calculate_change:
+            baseline_frames = baseline_by_variable.get(variable, [])
+
+            if not baseline_frames:
+                _log(
+                    f"[CHANGE SKIP] No baseline summary for {variable!r}. "
+                    f"Expected {baseline_scenario!r} / "
+                    f"{baseline_time_horizon!r}; the normal spatial summary "
+                    "will still be written, but change fields cannot be "
+                    "calculated for this variable.",
+                    verbose=verbose,
+                )
+            else:
+                baseline_table = pd.concat(
+                    baseline_frames, ignore_index=True
+                )
+
+                key_fields = [feature_id_field, "source_feature"]
+                stat_fields = ["min", "max"]
+                if include_mean:
+                    stat_fields.insert(1, "mean")
+
+                baseline_values = baseline_table[
+                    [*key_fields, *stat_fields]
+                ].copy()
+                baseline_values = baseline_values.drop_duplicates(
+                    subset=key_fields
+                )
+                baseline_values = baseline_values.rename(
+                    columns={
+                        field: f"baseline_{field}"
+                        for field in stat_fields
+                    }
+                )
+
+                combined = combined.merge(
+                    baseline_values,
+                    on=key_fields,
+                    how="left",
+                )
+                combined = gpd.GeoDataFrame(
+                    combined, geometry="geometry", crs=features.crs
+                )
+
+                for field in stat_fields:
+                    combined[f"change_{field}"] = (
+                        pd.to_numeric(combined[field], errors="coerce")
+                        - pd.to_numeric(
+                            combined[f"baseline_{field}"], errors="coerce"
+                        )
+                    )
+
+
+        # --------------------------------------------------------------
         # Keep GeoPackage/CSV precision consistent with the variable.
         # --------------------------------------------------------------
         output_decimals = _output_decimals(
             variable
         )
 
-        for climate_field in (
-            "min",
-            "mean",
-            "max",
-        ):
+        climate_fields = ["min", "max"]
+        if include_mean:
+            climate_fields.insert(1, "mean")
+
+        round_fields = list(climate_fields)
+        if calculate_change:
+            round_fields.extend(
+                [f"baseline_{field}" for field in climate_fields]
+            )
+            round_fields.extend(
+                [f"change_{field}" for field in climate_fields]
+            )
+
+        for climate_field in round_fields:
             if climate_field in combined.columns:
                 combined[
                     climate_field
@@ -1172,6 +1312,28 @@ def run_spatial_summary(
             csv_frame
         )
 
+        if calculate_change and write_feature_summary_layer:
+            change_fields = [
+                field for field in combined.columns
+                if field.startswith("change_")
+            ]
+            for _, change_row in combined.iterrows():
+                # Baseline records are useful in the variable layers but do not
+                # need duplicate zero-change columns in the wide feature layer.
+                if str(change_row["scenario"]).lower() == str(baseline_scenario).lower():
+                    continue
+
+                row_data = {feature_id_field: change_row[feature_id_field]}
+                for field in change_fields:
+                    field_name = _safe_name(
+                        f"{variable}_{change_row['scenario']}_"
+                        f"{change_row['time_horizon_year']}_"
+                        f"{change_row['source_feature']}_{field}",
+                        max_length=60,
+                    )
+                    row_data[field_name] = change_row[field]
+                feature_change_frames.append(pd.DataFrame([row_data]))
+
         layer_name = _safe_name(variable)
 
         combined.to_file(
@@ -1186,6 +1348,46 @@ def run_spatial_summary(
         _log(
             f"[WRITE] layer={layer_name} | "
             f"records={len(combined)}",
+            verbose=verbose,
+        )
+
+    # ==================================================================
+    # WRITE FEATURE-PATH CHANGE SUMMARY LAYER
+    # ==================================================================
+    # This is a copy of the supplied FEATURE_PATH geometry/attributes with
+    # climate-change fields joined to it. The original input dataset is not
+    # edited.
+    if calculate_change and write_feature_summary_layer and feature_change_frames:
+        feature_changes_long = pd.concat(
+            feature_change_frames, ignore_index=True
+        )
+        feature_changes_wide = feature_changes_long.groupby(
+            feature_id_field, as_index=False
+        ).first()
+
+        feature_summary = features.merge(
+            feature_changes_wide,
+            on=feature_id_field,
+            how="left",
+        )
+        feature_summary = gpd.GeoDataFrame(
+            feature_summary, geometry="geometry", crs=features.crs
+        )
+
+        feature_layer_name = _safe_name(
+            f"{dataset_name}_Change_Summary"
+        )
+        feature_summary.to_file(
+            output_gpkg,
+            layer=feature_layer_name,
+            driver="GPKG",
+            index=False,
+        )
+        written["feature_change_summary"] = output_gpkg
+
+        _log(
+            f"[WRITE] layer={feature_layer_name} | "
+            f"records={len(feature_summary)}",
             verbose=verbose,
         )
 
@@ -1215,11 +1417,11 @@ def run_spatial_summary(
         )
 
         # Final safety rounding by climate variable.
-        for climate_field in (
-            "min",
-            "mean",
-            "max",
-        ):
+        climate_fields = ["min", "max"]
+        if include_mean:
+            climate_fields.insert(1, "mean")
+
+        for climate_field in climate_fields:
             if climate_field not in combined_csv.columns:
                 continue
 
