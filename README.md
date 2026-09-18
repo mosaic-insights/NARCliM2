@@ -1,109 +1,66 @@
 NARCliM2 Data and Hazards Analysis Workflow
 
-A reusable Python workflow for NARCliM2.0 climate-data access,
-processing, ensemble analysis, spatial summarisation, time-series
-analysis, mapping, storm indicators, and climate-adjusted
-flood-frequency screening.
+A reusable Python package for NARCliM2.0 climate-data extraction,
+climate-model ensemble analysis, spatial climate-risk assessment,
+rainfall and temperature time-series analysis, storm indicators,
+mapping, and climate-adjusted flood-frequency screening.
 
-The package is designed for reproducible climate-risk and geospatial
-analysis across user-defined study areas, climate variables, model
-ensembles, scenarios, and planning horizons.
+The package converts NARCliM2 data from the NCI THREDDS service into
+analysis-ready climate products for user-defined study areas. It was
+designed as a modular Python workflow so project paths, climate
+variables, scenarios, time horizons, models, thresholds, and output
+settings remain configurable rather than hard-coded.
 
-Developer: Jabbar Khaledi --- Data and Geospatial Analyst |
-Python Developer
+Author: Jabbar Khaledi
+Language: Python
+Data source: NARCliM2.0 / NCI THREDDS
+Spatial support: Points and polygons
+Primary outputs: NetCDF, GeoTIFF, GeoPackage, CSV, plots, maps, and
+processing manifests
 
-Contents
+Package structure
 
-Overview
+NARCliM2/
+├── pyproject.toml
+├── README.md
+├── example.py
+├── NARCliM_Example.ipynb
+├── CITATION.cff
+├── CHANGELOG.md
+├── .gitignore
+└── src/
+    └── narclim_workflow/
+        ├── __init__.py
+        ├── catalog.py
+        ├── config.py
+        ├── domain.py
+        ├── spatial.py
+        ├── workflow.py
+        ├── uncertainty.py
+        ├── spatial_summary.py
+        ├── ensemble_maps.py
+        ├── rain_temp_timeseries.py
+        └── flood.py
 
-Installation
-
-NARCliM configuration
-
-Package workflows
-
-Core processing concepts
-
-Examples
-
-Output structure
-
-QA and interpretation
-
-Repository structure
-
-Citation
-
-Overview
-
-Main capabilities
-
-The package supports:
-
-automated NARCliM2.0 access through NCI THREDDS/OPeNDAP and
-catalogue discovery;
-
-automatic selection of the appropriate NARCliM spatial domain;
-
-spatial extraction for polygon and point study areas;
-
-processing of multiple variables, scenarios, GCMs, RCMs, and time
-horizons;
-
-temporal averaging for individual GCM × RCM ensemble members;
-
-pixel-wise ensemble Min / optional Mean / Max calculations;
-
-future-climate change relative to historical baseline;
-
-configurable storm-wind threshold indicators derived from
-sfcWindmax;
-
-retention of original daily storm-source data for QA when requested;
-
-monthly, seasonal, and annual rainfall/temperature time-series
-analysis;
-
-derived daily mean temperature, tasmeanAdjust;
-
-spatial summaries for planning zones, land use, catchments,
-administrative areas, sites, assets, and other user datasets;
-
-GeoTIFF, NetCDF, GeoPackage, CSV, plot, map, and processing-manifest
-outputs;
-
-approximate climate-adjusted flood-frequency analysis using BoM
-design rainfall and ARR climate-change/loss information.
-
-Design principles
-
-Reproducibility --- climate-data processing is implemented as
-repeatable Python workflows rather than manual GIS steps.
-Flexibility --- study areas, variables, scenarios, time horizons,
-models, statistics, and selected hazard parameters are configurable.
-Transparency --- intermediate products, temporal averages, ensemble
-statistics, metadata, source data, and manifests are retained where
-useful.
-Spatial applicability --- climate-model outputs are converted into
-analysis-ready products for GIS, planning, and climate-risk assessment.
+The modules are intentionally separated by task: workflow.py handles
+NARCliM discovery/download/subsetting; uncertainty.py handles temporal
+averaging and model-ensemble statistics; spatial_summary.py transfers
+ensemble information to user features; rain_temp_timeseries.py retains
+temporal variability; ensemble_maps.py creates maps; and flood.py
+provides the separate BoM/ARR flood-frequency workflow.
 
 Installation
 
-1. Clone the repository
+Create or activate the Python environment used for geospatial analysis,
+clone the repository, then install the package in editable mode:
 
-git clone https://github.com/mosaic-insights/NARCliM2.git
+git clone https://github.com/AlluviumGroup/Geomorphic-Erosion-Risk-Assessment or https://github.com/mosaic-insights/NARCliM2.git
 cd NARCliM2
-
-2. Install the package
-
-Run the following from the repository root --- the folder containing
-pyproject.toml:
-
 python -m pip install -e .
 
-The -e option installs the package in editable mode, which is
-recommended for development because changes made under
-src/narclim_workflow/ are available without reinstalling the package.
+Editable installation means changes made under src/narclim_workflow/
+are available when the package is imported; the package normally does
+not need to be reinstalled after each code edit.
 
 For development dependencies:
 
@@ -111,133 +68,103 @@ python -m pip install -e ".[dev]"
 
 Python 3.11+ is recommended.
 
-Optional installation check:
+Test the installation:
 
-import narclim_workflow
-print(narclim_workflow.__file__)
+python -c "import narclim_workflow; print(narclim_workflow.__file__)"
 
-NARCliM configuration
+NARCliM2 configuration
 
-Spatial domains
-
-Domain                    Approx. resolution Coverage
-
-NARCliM2-0-SEAus-04                 ~4 km South-East Australia
-AUS-18                             ~18 km Australia
-
-Domain selection is controlled with:
-
-domain_key="auto"       # automatically select the appropriate domain
-domain_key="seaus_4km"  # force ~4 km South-East Australia domain
-domain_key="aus_18"     # force ~18 km Australia-wide domain
-
-With domain_key="auto", the ~4 km domain is selected when the
-supplied study area is fully within its stored footprint; otherwise the
-workflow uses the Australia-wide domain.
+The main climate-analysis settings can be supplied directly in Python.
+The following blocks show the package's configured variables, scenarios,
+time horizons, GCMs, RCMs, and domains in the same form used in analysis
+scripts.
 
 Climate variables
 
-Configured NARCliM source variables and climate indices are:
-
-variables = [
-    "prAdjust",       # daily bias-adjusted precipitation
-    "tasmaxAdjust",   # daily bias-adjusted maximum temperature
-    "tasminAdjust",   # daily bias-adjusted minimum temperature
-    "TXge35",         # yearly number of days Tmax >= 35 C
-    "TNlt2",          # yearly number of days Tmin < 2 C
-    "FFDIgt50",       # yearly number of days with FFDI >= 50
-    "R20mm",          # yearly number of days precipitation >= 20 mm
-    "R99p",           # yearly precipitation from extremely wet days
+VARIABLES = [
+    "prAdjust",       # bias-adjusted precipitation
+    "tasmaxAdjust",   # bias-adjusted maximum temperature
+    "tasminAdjust",   # bias-adjusted minimum temperature
+    "TXge35",         # days with Tmax >= 35 C
+    "TNlt2",          # days with Tmin < 2 C
+    "FFDIgt50",       # days with FFDI >= 50
+    "R20mm",          # days with precipitation >= 20 mm
+    "R99p",           # precipitation from extremely wet days
     "SPI12",          # 12-month Standardised Precipitation Index
-    "StormDays",      # derived annual wind-threshold exceedance indicator
+    "StormDays",      # derived wind-threshold exceedance indicator
 ]
 
 Variable          Description       NCI branch               Frequency
 
-prAdjust        Daily             bias-adjusted-output   day
-bias-adjusted
+prAdjust        Bias-adjusted     bias-adjusted-output   daily
 precipitation
 
-tasmaxAdjust    Daily             bias-adjusted-output   day
-bias-adjusted
+tasmaxAdjust    Bias-adjusted     bias-adjusted-output   daily
 maximum
 temperature
 
-tasminAdjust    Daily             bias-adjusted-output   day
-bias-adjusted
+tasminAdjust    Bias-adjusted     bias-adjusted-output   daily
 minimum
 temperature
 
-TXge35          Days with maximum bias-adjusted-output   yr
+TXge35          Number of days    bias-adjusted-output   yearly
+with maximum
 temperature ≥35°C
 
-TNlt2           Days with minimum bias-adjusted-output   yr
+TNlt2           Number of days    bias-adjusted-output   yearly
+with minimum
 temperature <2°C
 
-FFDIgt50        Days with FFDI    DD                     yr
-≥50
+FFDIgt50        Number of days    DD                     yearly
+with FFDI ≥50
 
-R20mm           Days with         DD                     yr
+R20mm           Number of days    DD                     yearly
+with
 precipitation ≥20
 mm
 
-R99p            Total             DD                     yr
+R99p            Total             DD                     yearly
 precipitation
 from extremely
 wet days
 
-SPI12           12-month          DD                     mon
+SPI12           12-month          DD                     monthly
 Standardised
 Precipitation
 Index
 
-tasmeanAdjust is derived within rain_temp_timeseries.py:
+Daily mean temperature is derived locally rather than downloaded:
 
 tasmeanAdjust = (tasmaxAdjust + tasminAdjust) / 2
 
-It is therefore not downloaded as a separate NARCliM source variable.
+StormDays is also derived. For example:
 
-Storm processing
+storm_threshold_kmh = 89.0
+save_storm_source = True
 
-StormDays is also a derived indicator. The package reads daily
-maximum near-surface wind speed, sfcWindmax, and applies a
-user-defined threshold:
-
-storm_threshold_kmh=89.0
-save_storm_source=True
-
-For example, 89 km/h produces:
+creates the annual indicator:
 
 StormDaysGT89
 
-The indicator represents the annual number of days where daily
-sfcWindmax exceeds the threshold. The original daily sfcWindmax
-subset can be retained for QA and testing alternative thresholds without
-downloading the source again.
+while optionally retaining the original daily sfcWindmax subset for QA
+and alternative threshold testing.
 
-Because high-wind exceedances can be rare, StormDaysGT* outputs retain
-three decimal places; most other exported climate values use one
-decimal place.
+Climate scenarios
 
-Scenarios
-
-Configured scenarios are:
-
-scenarios = [
+SCENARIOS = [
     "historical",
     "ssp126",
     "ssp245",
     "ssp370",
 ]
 
-Variables unavailable for a requested scenario/model combination are
-skipped and reported rather than terminating the full batch. For
-example, the package configuration treats SPI12 as unavailable for
-historical.
+Not every variable is available for every scenario/model combination.
+Unsupported combinations are skipped and reported instead of terminating
+the complete batch.
 
 Time horizons
 
-Time windows are fully user configurable. A typical configuration is:
+Time horizons are user-defined. A typical project configuration is:
 
 TIME_WINDOWS = {
     "baseline":   (1985, 2014),
@@ -247,14 +174,12 @@ TIME_WINDOWS = {
 }
 
 Historical NARCliM data are generally within 1951–2014, while
-projection scenarios cover 2015–2100. Requested windows should always
-be checked against the datasets used in the analysis.
+projection scenarios cover 2015–2100. Requested windows should be
+checked against the datasets used for each project.
 
-Climate models
+Global Climate Models --- GCMs
 
-Five GCMs are configured:
-
-gcms = [
+GCMS = [
     "ACCESS-ESM1-5",
     "EC-Earth3-Veg",
     "MPI-ESM1-2-HR",
@@ -262,165 +187,62 @@ gcms = [
     "UKESM1-0-LL",
 ]
 
-Two RCMs are configured:
+Configured realisations are:
 
-rcms = [
+ACCESS-ESM1-5     → r6i1p1f1
+EC-Earth3-Veg     → r1i1p1f1
+MPI-ESM1-2-HR     → r1i1p1f1
+NorESM2-MM        → r1i1p1f1
+UKESM1-0-LL       → r1i1p1f2
+
+Regional Climate Models --- RCMs
+
+RCMS = [
     "NARCliM2-0-WRF412R3",
     "NARCliM2-0-WRF412R5",
 ]
 
-With 5 GCMs × 2 RCMs, each grid cell can contain up to 10
-ensemble-member values. Actual availability depends on variable,
-domain, scenario, model, and period.
+With 5 GCMs × 2 RCMs, up to 10 GCM × RCM ensemble members can
+contribute to a pixel-wise ensemble statistic.
 
-Package workflows
+Spatial domains
 
-Core NARCliM workflow
+DOMAIN_KEY = "auto"       # automatic selection
+# DOMAIN_KEY = "seaus_4km"
+# DOMAIN_KEY = "aus_18"
+
+Domain                    Approx. resolution Coverage
+
+NARCliM2-0-SEAus-04                 ~4 km South-East Australia
+AUS-18                             ~18 km Australia
+
+With domain_key="auto", the workflow uses the ~4 km South-East
+Australia domain when the study area is fully within its stored
+footprint; otherwise it uses the Australia-wide domain.
+
+Workflow 1 --- NARCliM data extraction
+
+workflow.py is the main NARCliM data-access workflow.
 
 Select study area
         ↓
-Select domain automatically or explicitly
+Select NARCliM domain automatically or explicitly
         ↓
-workflow.py
+Select variables + scenarios + time horizons + GCMs + RCMs
         ↓
 Discover NCI THREDDS catalogues
         ↓
 Open remote NetCDF through OPeNDAP
         ↓
-Subset requested time period and spatial extent
+Subset requested time period
         ↓
-Save local NARCliM NetCDF subsets
+Subset to the study-area bounding box
         ↓
-uncertainty.py
+Save local NetCDF subsets
         ↓
-Temporal average for each GCM × RCM member
-        ↓
-Pixel-wise ensemble Min / [optional Mean] / Max
-        ↓
-Calculate scenario change relative to historical baseline
-        ↓
-spatial_summary.py
-        ↓
-Summarise climate values and changes for polygons or points
-        ↓
-ensemble_maps.py
-        ↓
-Create maps from ensemble rasters
+Write processing manifest
 
-Rainfall / temperature time-series workflow
-
-This pathway preserves temporal variability instead of averaging the
-complete planning horizon:
-
-Daily prAdjust / tasmaxAdjust / tasminAdjust
-        ↓
-rain_temp_timeseries.py
-        ↓
-Derive tasmeanAdjust if requested
-        ↓
-Monthly / Seasonal / Annual aggregation
-        ↓
-Align ensemble-member time coordinates
-        ↓
-Pixel-wise ensemble Min / Mean / Max through time
-        ↓
-NetCDF + study-area CSV + uncertainty plots
-
-Aggregation rules:
-
-Rainfall:     Monthly total | Seasonal total | Annual total
-Temperature:  Monthly mean  | Seasonal mean  | Annual mean
-Seasons:      DJF | MAM | JJA | SON
-
-December is assigned to the following DJF season year, incomplete
-seasons are removed, and annual values are retained only where all 12
-months are represented.
-
-Flood-hazard workflow
-
-Point locations / coordinates
-        ↓
-Identify Urban / Rural context
-        ↓
-BoM design rainfall + ARR climate/loss information
-        ↓
-flood.py
-        ↓
-Current rainfall-runoff reference events
-        ↓
-Climate-adjust future rainfall and relevant losses
-        ↓
-Future runoff-frequency curve
-        ↓
-Equivalent future flood frequency
-        ↓
-GeoPackage + CSV + runoff curves + QA/source files
-
-flood.py is an approximate climate-driven rainfall-runoff frequency
-method. It is not a hydraulic flood model and does not calculate
-flood extent, depth, velocity, routing, drainage-network capacity,
-floodplain storage, or property-scale inundation.
-
-Core processing concepts
-
-Temporal averaging
-
-For each:
-
-variable × scenario × GCM × RCM × grid cell × time horizon
-
-the climate values are averaged across the selected horizon. The result
-is one temporal-average raster for each GCM × RCM ensemble member.
-
-Ensemble uncertainty
-
-The temporal-average member rasters are combined and ensemble statistics
-are calculated independently at each grid cell:
-
-Min = lowest GCM × RCM temporal-average value
-Mean = average GCM × RCM temporal-average value   [optional]
-Max = highest GCM × RCM temporal-average value
-
-Mean can be disabled:
-
-include_mean=False
-
-The Min/Max outputs are model-ensemble bounds, not the minimum and
-maximum individual years within the horizon.
-
-Climate change relative to baseline
-
-When enabled:
-
-calculate_change=True
-baseline_scenario="historical"
-baseline_time_horizon="baseline"
-
-the package calculates:
-
-change_min  = scenario_min  - baseline_min
-change_max  = scenario_max  - baseline_max
-change_mean = scenario_mean - baseline_mean   # only when Mean is enabled
-
-This convention is used consistently by the uncertainty and
-spatial-summary workflows.
-
-Spatial summarisation
-
-The ensemble products can be applied to planning zones, land use,
-districts, LGAs, catchments, subcatchments, properties, sites, assets,
-and other point/polygon datasets.
-
-Polygon → spatial mean of intersecting cells from each ensemble raster
-Point   → value sampled from the raster cell containing the point
-
-Therefore, polygon fields named min and max are spatial means of the
-ensemble-Min and ensemble-Max rasters; they are not the minimum and
-maximum raster cells inside the polygon.
-
-Examples
-
-1. Download and subset NARCliM data
+Example
 
 from pathlib import Path
 from narclim_workflow import run_workflow
@@ -459,13 +281,54 @@ manifest = run_workflow(
 
 print(manifest["status"].value_counts(dropna=False))
 
-Large daily-variable runs can be substantial. Keep overwrite=False
-when existing outputs should be reused.
+The workflow supports both polygon and point inputs. When multiple input
+features are supplied, id_field can be used to create separate
+feature-specific output folders.
 
-2. Climate-model uncertainty and change
+Workflow 2 --- Climate-model uncertainty and change
 
-For a storm threshold of 89 km/h, use the derived variable name
-StormDaysGT89:
+uncertainty.py converts downloaded NARCliM subsets into
+temporal-average model rasters and pixel-wise ensemble statistics.
+
+Downloaded NARCliM subset
+        ↓
+Average each GCM × RCM through the selected time horizon
+        ↓
+One temporal-average raster per ensemble member
+        ↓
+Combine available ensemble members
+        ↓
+Pixel-wise Min / optional Mean / Max
+        ↓
+Compare future scenario/horizon with historical baseline
+        ↓
+Change Min / optional Change Mean / Change Max
+        ↓
+GeoTIFF + GeoPackage outputs
+
+What Min, Mean and Max represent
+
+For each grid cell:
+
+Min  = lowest GCM × RCM temporal-average value
+Mean = average GCM × RCM temporal-average value     [optional]
+Max  = highest GCM × RCM temporal-average value
+
+These are model-ensemble bounds after temporal averaging. They are
+not the minimum and maximum individual years inside the time horizon.
+
+Mean can be disabled:
+
+include_mean=False
+
+Climate change is calculated using the same statistic against the
+historical baseline:
+
+change_min  = scenario_min  - baseline_min
+change_mean = scenario_mean - baseline_mean         [when Mean is enabled]
+change_max  = scenario_max  - baseline_max
+
+Example
 
 from pathlib import Path
 from narclim_workflow.uncertainty import run_uncertainty_workflow
@@ -488,7 +351,7 @@ manifest = run_uncertainty_workflow(
     boundary_id_field=None,
     output_folder_name="Climate_Indicies",
 
-    include_mean=False,                 # True to also calculate ensemble Mean
+    include_mean=False,
     calculate_change=True,
     baseline_scenario="historical",
     baseline_time_horizon="baseline",
@@ -499,17 +362,39 @@ manifest = run_uncertainty_workflow(
 
 print(manifest["status"].value_counts(dropna=False))
 
-Typical ensemble outputs include:
+Typical raster outputs:
 
 TXge35_Min_ssp245_2041_2060.tif
 TXge35_Max_ssp245_2041_2060.tif
 TXge35_Change_Min_ssp245_2041_2060.tif
 TXge35_Change_Max_ssp245_2041_2060.tif
 
-When include_mean=True, Mean and Change-Mean products are also
-generated.
+When include_mean=True, corresponding Mean and Change-Mean products
+are also produced.
 
-3. Spatial summary for planning zones or other features
+Workflow 3 --- Spatial climate summaries
+
+spatial_summary.py transfers ensemble climate information to arbitrary
+user-defined polygon or point datasets.
+
+Ensemble Min / optional Mean / Max rasters
+        +
+Planning zones / catchments / land use / sites / assets
+        ↓
+Reproject features to raster CRS
+        ↓
+Polygon → spatial mean of intersecting raster cells
+Point   → sample containing raster cell
+        ↓
+Attach baseline values + scenario changes
+        ↓
+GeoPackage + CSV
+
+For polygons, fields named min, optional mean, and max are spatial
+means of their corresponding ensemble-statistic rasters. They are
+not the minimum/maximum raster cells inside the polygon.
+
+Example
 
 from pathlib import Path
 from narclim_workflow.spatial_summary import run_spatial_summary
@@ -524,7 +409,7 @@ outputs = run_spatial_summary(
     feature_id_field=None,
     all_touched=True,
 
-    include_mean=False,                 # True if Mean rasters were generated
+    include_mean=False,
     calculate_change=True,
     baseline_scenario="historical",
     baseline_time_horizon="baseline",
@@ -533,7 +418,7 @@ outputs = run_spatial_summary(
     verbose=True,
 )
 
-To restrict processing:
+Restrict the analysis when required:
 
 outputs = run_spatial_summary(
     feature_path=FEATURE_PATH,
@@ -552,37 +437,49 @@ Typical outputs:
 Planning_Zones_Hazards.gpkg
 Planning_Zones_Hazards.csv
 
-The GeoPackage contains climate-variable layers and the feature-based
-change summary produced by the current spatial-summary workflow.
+Workflow 4 --- Rainfall and temperature time series
 
-4. Ensemble maps
+rain_temp_timeseries.py is intentionally separate from the
+whole-horizon uncertainty workflow. It retains the time dimension
+and produces monthly, seasonal, and annual climate series.
 
-from pathlib import Path
-from narclim_workflow.ensemble_maps import plot_ensemble_maps
+Daily prAdjust / tasmaxAdjust / tasminAdjust
+        ↓
+Derive tasmeanAdjust if requested
+        ↓
+Aggregate each GCM × RCM
+        ↓
+Monthly / Seasonal / Annual time series
+        ↓
+Align ensemble-member time coordinates
+        ↓
+Pixel-wise ensemble Min / Mean / Max at each time step
+        ↓
+Study-area member-average time series
+        ↓
+CSV + NetCDF + plots
 
-maps = plot_ensemble_maps(
-    input_root=Path(r"C:\NARCliM_Outputs"),
-    boundary_path=Path(r"C:\path\to\study_area.shp"),
-    variables=None,
-    scenarios=None,
-    statistics=["min", "max"],  # add "mean" when Mean rasters exist
-    cmap="viridis",
-    dpi=300,
-    overwrite=True,
-    show=False,
-    verbose=True,
-)
+Aggregation rules are compactly defined as:
 
-print(f"Created/found {len(maps)} map(s).")
+RAINFALL_AGGREGATION = {
+    "Monthly": "total",
+    "Seasonal": "total",
+    "Annual": "total",
+}
 
-Maps are written under:
+TEMPERATURE_AGGREGATION = {
+    "Monthly": "mean",
+    "Seasonal": "mean",
+    "Annual": "mean",
+}
 
-Climate_Indicies/Plot and Maps/
+SEASONS = ["DJF", "MAM", "JJA", "SON"]
 
-5. Rainfall and temperature time-series analysis
+December belongs to the following DJF season year; incomplete seasons
+are removed; annual values are retained only when all 12 months are
+represented.
 
-Daily prAdjust, tasmaxAdjust, and tasminAdjust subsets must
-already exist under NARCliM Data, normally from run_workflow().
+Example
 
 from pathlib import Path
 from narclim_workflow import run_rain_temp_timeseries
@@ -592,8 +489,8 @@ manifest = run_rain_temp_timeseries(
     variables=["prAdjust", "tasmaxAdjust", "tasminAdjust", "tasmeanAdjust"],
     frequencies=["Monthly", "Seasonal", "Annual"],
 
-    scenarios=None,       # automatically discover available scenarios
-    time_windows=None,    # automatically discover available time windows
+    scenarios=None,       # auto-discover
+    time_windows=None,    # auto-discover
     gcms=None,
     rcms=None,
     feature_ids=None,
@@ -607,16 +504,71 @@ manifest = run_rain_temp_timeseries(
 
 print(manifest["status"].value_counts(dropna=False))
 
-The workflow preserves monthly/seasonal/annual time steps and produces
-gridded NetCDF ensemble statistics, study-area CSV summaries, and
-uncertainty plots.
+For gridded NetCDF outputs, ensemble statistics are calculated
+pixel-by-pixel at each time step. For CSVs and plots, each GCM × RCM
+member is first spatially averaged over the study-area subset and the
+ensemble statistics are then calculated across those member-average
+series.
 
-6. Approximate climate-adjusted flood analysis
+Workflow 5 --- Ensemble maps
 
-The flood workflow can run independently of the NARCliM THREDDS download
-workflow.
+ensemble_maps.py creates map products from the ensemble-statistic
+rasters.
 
-Point spatial file
+from pathlib import Path
+from narclim_workflow.ensemble_maps import plot_ensemble_maps
+
+maps = plot_ensemble_maps(
+    input_root=Path(r"C:\NARCliM_Outputs"),
+    boundary_path=Path(r"C:\path\to\study_area.shp"),
+    variables=None,
+    scenarios=None,
+    statistics=["min", "max"],   # add "mean" if Mean was generated
+    cmap="viridis",
+    dpi=300,
+    overwrite=True,
+    show=False,
+    verbose=True,
+)
+
+print(f"Created/found {len(maps)} map(s).")
+
+Maps are written under:
+
+Climate_Indicies/Plot and Maps/
+
+Workflow 6 --- Climate-adjusted flood-frequency screening
+
+flood.py provides a separate approximate flood-hazard workflow using
+BoM design rainfall and ARR climate-change/loss information.
+
+The method compares current design rainfall-runoff events with
+climate-adjusted future rainfall-runoff conditions and reports an
+equivalent future flood frequency.
+
+Point locations / coordinates
+        ↓
+Urban / Rural context
+        ↓
+BoM design rainfall + ARR information
+        ↓
+Current design rainfall-runoff events
+        ↓
+Climate-adjust rainfall and relevant losses
+        ↓
+Future runoff-frequency curve
+        ↓
+Equivalent future event frequency
+        ↓
+GeoPackage + CSV + runoff curves + QA/source files
+
+Default settings include:
+
+CURRENT_ARIS_YEARS = [1, 10, 100]
+URBAN_DURATION_HOURS = 1
+RURAL_DURATION_HOURS = 24
+
+Example
 
 from pathlib import Path
 from narclim_workflow import run_flood_hazard
@@ -629,7 +581,7 @@ TIME_WINDOWS = {
     "long_term": (2081, 2100),
 }
 
-flood_results = run_flood_hazard(
+results = run_flood_hazard(
     output_root=OUTPUT_ROOT,
     time_windows=TIME_WINDOWS,
     scenarios=["historical", "ssp245", "ssp370"],
@@ -640,23 +592,21 @@ flood_results = run_flood_hazard(
     verbose=True,
 )
 
-context_field should identify each point as Urban or Rural.
-Default current reference events are 1, 10, and 100 year ARIs;
-default durations are 1 hour for Urban and 24 hours for Rural. These
-settings are configurable.
-
 Principal outputs:
 
 Flood_Hazard.gpkg
 Flood_Hazard.csv
 Flood_Runoff_Curves.csv
 
-Downloaded/source information and QA files are retained under
-NARCliM Data/Flood/.
+Important: this is a climate-risk screening/comparative method. It
+is not a hydraulic flood model and does not calculate flood
+extent, depth, velocity, channel routing, stormwater-network or
+culvert capacity, floodplain storage, or property-scale inundation.
 
 Output structure
 
-A typical project workspace is:
+The package separates downloaded/subset source data from derived climate
+products:
 
 <OUTPUT_ROOT>/
 ├── NARCliM Data/
@@ -667,9 +617,9 @@ A typical project workspace is:
 │   ├── R99p/
 │   ├── FFDIgt50/
 │   ├── SPI12/
-│   ├── sfcWindmax/              # optional retained storm source
-│   ├── StormDaysGT89/           # threshold-dependent name
-│   └── Flood/                   # BoM/ARR flood source + QA data
+│   ├── sfcWindmax/                 # optional retained storm source
+│   ├── StormDaysGT<threshold>/     # derived storm indicator
+│   └── Flood/                      # BoM/ARR source + QA data
 │
 └── Climate_Indicies/
     ├── Temporal_Average/
@@ -691,93 +641,103 @@ A typical project workspace is:
     └── Plot and Maps/
 
 Climate_Indicies is retained because it is the current package
-output-folder name. If the spelling is standardised to
-Climate_Indices later, package configuration, examples, and
-downstream paths should be updated together.
+output-folder name. If this is standardised to Climate_Indices later,
+configuration, examples, and downstream paths should be changed
+together.
+
+Output precision
+
+The package applies variable-aware output precision:
+
+StormDaysGT*  → 3 decimal places
+Other climate variables → 1 decimal place
+
+This avoids losing useful information for rare-event storm indicators
+while keeping other climate outputs readable.
 
 QA and interpretation
 
-Temporal mean vs ensemble statistics
+The workflow retains intermediate and source products where they are
+useful for QA. Before using outputs in a climate-risk assessment, review
+the spatial and model assumptions relevant to the project.
+
+Key checks include:
+
+CRS and spatial alignment
+Raster extent and resolution
+Valid-cell count and nodata handling
+Requested vs available model members
+Scenario and time-window availability
+Temporal aggregation method
+Ensemble-statistic interpretation
+Storm threshold and units
+Polygon zonal-summary method
+Flood-method assumptions and selected event settings
+
+Important interpretation sequence
 
 Raw climate time series
         ↓
-Temporal mean within each GCM × RCM
+Temporal average within each GCM × RCM
         ↓
 One value per grid cell per ensemble member
         ↓
 Ensemble Min / [optional Mean] / Max across members
+        ↓
+Spatial summary for user features
 
-This processing order is important when interpreting outputs.
+Do not interpret ensemble Min/Max as annual extremes. They describe the
+spread across climate-model members after the selected temporal
+aggregation.
 
-Polygon summaries
+Development and GitHub workflow
 
-For polygon datasets, min, optional mean, and max are spatial
-means of the corresponding ensemble rasters over each polygon. They are
-not the minimum/maximum raster cells within that polygon.
+After editing and testing locally, first inspect what has changed:
 
-Point summaries
+git status
+git diff
 
-For point datasets, ensemble statistics are sampled directly from the
-raster cell containing each point.
+Then stage, commit, and push the intended package changes:
 
-Rainfall/temperature statistics
+git add .
+git status
+git commit -m "Describe your change"
+git push
 
-For gridded time-series outputs, ensemble statistics are calculated
-pixel-by-pixel at each monthly, seasonal, or annual time step. For CSVs
-and plots, each GCM × RCM member is first spatially averaged over the
-study-area subset; ensemble statistics are then calculated across those
-member-average series.
+Generated climate outputs, local project data, caches, and other
+non-source files should remain excluded through .gitignore. Always
+inspect git status before committing a public repository.
 
-Flood interpretation
+Reproducibility and model limitations
 
-flood.py estimates climate-driven changes in equivalent event
-frequency using rainfall-runoff matching. It should be interpreted as a
-screening/comparative method and does not replace project-specific
-hydrologic/hydraulic modelling.
+The package separates reusable processing functions from
+project-specific configuration. It does not remove the need to review
+the scientific assumptions behind the selected climate variables,
+scenarios, model ensemble, planning horizons, thresholds, spatial
+summaries, and hazard methods.
 
-Raster QA
+NARCliM availability varies by variable, scenario, model, domain, and
+period. A requested combination that is not available should not be
+interpreted as a zero climate value.
 
-Always inspect CRS, extent, resolution, valid-cell count, nodata
-handling, and grid alignment as part of project QA.
+The ensemble workflow quantifies model spread across available GCM ×
+RCM members; it is not a probabilistic confidence interval unless a
+separate statistical framework justifies that interpretation.
 
-Repository structure
-
-NARCliM2/
-├── README.md
-├── pyproject.toml
-├── example.py
-├── NARCliM_Example.ipynb
-├── CITATION.cff
-├── CHANGELOG.md
-├── .gitignore
-└── src/
-    └── narclim_workflow/
-        ├── __init__.py
-        ├── catalog.py
-        ├── config.py
-        ├── domain.py
-        ├── spatial.py
-        ├── workflow.py
-        ├── uncertainty.py
-        ├── spatial_summary.py
-        ├── ensemble_maps.py
-        ├── rain_temp_timeseries.py
-        └── flood.py
-
-For a public release, add an appropriate open-source LICENSE after
-confirming the licensing terms you want to use.
+The flood workflow is intentionally approximate and should not be
+represented as hydraulic inundation modelling.
 
 Citation
 
-If you use or adapt this package in a project, please cite the package
-and developer. A CITATION.cff file is included for GitHub citation
-metadata.
+If you use or adapt this package, please cite the package and developer.
+The repository includes CITATION.cff for GitHub citation metadata.
 
 Jabbar Khaledi
 Data and Geospatial Analyst | Python Developer
 Email: jabbarkhaledi88@gmail.com
 Primary language: Python
-Applications: NARCliM2.0 climate-data processing, climate-model
-uncertainty analysis, rainfall/temperature time-series analysis,
-storm-hazard analysis, approximate climate-adjusted flood-hazard
-assessment, climate-risk assessment, and geospatial analysis.
+
+Applications include NARCliM2.0 climate-data processing, climate-model
+uncertainty analysis, rainfall and temperature time-series analysis,
+storm-hazard analysis, climate-adjusted flood-frequency screening,
+climate-risk assessment, and geospatial analysis.
