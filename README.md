@@ -1,4 +1,4 @@
-NARCliM2 Workflow
+NARCliM2 Data and Hazard Analysis Workflow
 
 A reusable Python package for discovering, downloading, spatially
 subsetting, processing, summarising, and mapping NARCliM2.0 climate
