@@ -19,7 +19,7 @@ from rasterio.crs import CRS as RasterioCRS
 from rasterio.features import rasterize
 from shapely.geometry import Point, Polygon
 
-UNCERTAINTY_CODE_VERSION = "2026-09-18-baseline-change-v8"
+UNCERTAINTY_CODE_VERSION = "2026-10-22-ensemble-subfolders-v9"
 
 @dataclass(frozen=True)
 class ModelLayer:
@@ -2941,6 +2941,15 @@ def run_uncertainty_workflow(
     hazards_folder = (output_root / "Hazards")
     temporal_average_folder.mkdir(parents=True,exist_ok=True,)
     ensemble_folder.mkdir(parents=True,exist_ok=True,)
+    # Keep ensemble statistics and projection-minus-baseline rasters separate.
+    ensemble_stat_folders = {
+        "min": ensemble_folder / "Min",
+        "max": ensemble_folder / "Max",
+        "mean": ensemble_folder / "Mean",
+    }
+    ensemble_change_folder = ensemble_folder / "Change"
+    for folder in (*ensemble_stat_folders.values(), ensemble_change_folder):
+        folder.mkdir(parents=True, exist_ok=True)
     hazards_folder.mkdir(parents=True,exist_ok=True,)
     # ------------------------------------------------------------------
     # Validate the NARCliM data folder
@@ -3279,7 +3288,7 @@ def run_uncertainty_workflow(
                             )
 
                             output_path = (
-                                ensemble_folder
+                                ensemble_stat_folders[statistic]
                                 / output_name
                             )
 
@@ -3448,7 +3457,7 @@ def run_uncertainty_workflow(
             )
 
             change_path = (
-                ensemble_folder
+                ensemble_change_folder
                 / change_name
             )
 

@@ -7,6 +7,8 @@ import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio
+from rasterio.warp import reproject, Resampling
+from matplotlib.patches import Patch
 
 
 # =============================================================================
@@ -15,6 +17,111 @@ import rasterio
 
 DEFAULT_CMAP = "viridis"
 DEFAULT_DPI = 300
+
+# Variable-specific units and labels. SPI12 is a dimensionless index.
+VARIABLE_LABELS = {
+    "r20mm": ("Days with rainfall >=20 mm", "days/year"),
+    "txge35": ("Days with maximum temperature >=35°C", "days/year"),
+    "ffdigt50": ("Days with FFDI >50", "days/year"),
+    "stormdays": ("Storm days", "days/year"),
+    "stormdaysgt89": ("Days with wind speed >89 km/h", "days/year"),
+    "spi12": ("12-month Standardised Precipitation Index", "dimensionless"),
+}
+
+def _variable_info(raster_path: Path) -> tuple[str, str, str]:
+    """Return variable, descriptive label and unit from the raster filename."""
+    variable = re.split(r"_(?:Change_)?(?:Min|Max|Mean)_", raster_path.stem, maxsplit=1, flags=re.IGNORECASE)[0]
+    label, unit = VARIABLE_LABELS.get(variable.lower(), (variable, "index units"))
+    return variable, label, unit
+
+def _is_change_raster(raster_path: Path) -> bool:
+    return raster_path.parent.name.lower() == "change" or bool(
+        re.search(r"_Change_(Min|Mean|Max)_", raster_path.stem, re.IGNORECASE)
+    )
+
+def _period_label(raster_path: Path) -> str:
+    match = re.search(r"_(\d{4})_(\d{4})(?:_ID\d+)?$", raster_path.stem)
+    if match:
+        start = int(match.group(1))
+        return "2050s" if 2035 <= start < 2060 else "2090s" if start >= 2070 else f"{match.group(1)}–{match.group(2)}"
+    return "future projection"
+
+def _overlay_layer(ax, path, raster_crs, *, color, label, alpha, linewidth):
+    """Draw semi-transparent polygon fills and outlines; return a matching legend patch."""
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError("overlay_alpha must be between 0 and 1")
+    layer = gpd.read_file(path)
+    if layer.empty:
+        raise ValueError(f"Overlay contains no features: {path}")
+    if layer.crs is None:
+        raise ValueError(f"Overlay has no CRS: {path}")
+    layer = layer.to_crs(raster_crs)
+    # The alpha controls fill opacity; boundaries remain visible independently.
+    layer.plot(ax=ax, facecolor=color, edgecolor="none", alpha=alpha, zorder=4)
+    layer.boundary.plot(ax=ax, color=color, linewidth=linewidth, alpha=1.0, zorder=5)
+    return Patch(facecolor=color, edgecolor=color, alpha=max(alpha, 0.35), label=label)
+
+def _create_missing_spi12_change_rasters(ensemble_folder: Path, *, overwrite: bool = False, verbose: bool = True) -> None:
+    """Create SPI12 projection-minus-historical GeoTIFFs if not already available.
+
+    Match the same ensemble statistic (Min, Max, Mean) and feature ID.
+    Reproject baseline to the future grid when grids differ.
+    """
+    rasters = sorted(ensemble_folder.rglob("SPI12_*.tif"))
+    pattern = re.compile(r"^SPI12_(Min|Max|Mean)_(historical|ssp\d+)_(\d{4})_(\d{4})(_ID\d+)?$", re.IGNORECASE)
+    baseline = {}
+    futures = []
+    for path in rasters:
+        match = pattern.match(path.stem)
+        if not match:
+            continue
+        stat, scenario, start, end, feature = match.groups()
+        key = (stat.lower(), (feature or "").lower())
+        if scenario.lower() == "historical":
+            baseline[key] = path
+        else:
+            futures.append((path, stat, scenario, start, end, feature or "", key))
+    if not futures:
+        return
+    change_folder = ensemble_folder / "Change"
+    for future_path, stat, scenario, start, end, feature, key in futures:
+        baseline_path = baseline.get(key)
+        if baseline_path is None:
+            if verbose:
+                print(f"[SPI12 CHANGE SKIP] No historical {stat} baseline for {future_path.name}")
+            continue
+        output_path = change_folder / f"SPI12_Change_{stat}_{scenario}_{start}_{end}{feature}.tif"
+        if output_path.exists() and not overwrite:
+            continue
+        with rasterio.open(future_path) as future, rasterio.open(baseline_path) as historical:
+            if future.crs is None or historical.crs is None:
+                raise ValueError("SPI12 baseline and projection rasters require CRS metadata")
+            projected = future.read(1, masked=True).astype("float32")
+            if (future.crs == historical.crs and future.transform == historical.transform
+                    and future.shape == historical.shape):
+                reference = historical.read(1, masked=True).astype("float32")
+            else:
+                aligned = np.full(future.shape, np.nan, dtype="float32")
+                reproject(
+                    source=rasterio.band(historical, 1), destination=aligned,
+                    src_transform=historical.transform, src_crs=historical.crs,
+                    src_nodata=historical.nodata, dst_transform=future.transform,
+                    dst_crs=future.crs, dst_nodata=np.nan,
+                    resampling=Resampling.bilinear,
+                )
+                reference = np.ma.masked_invalid(aligned)
+            delta = np.ma.array(projected - reference)
+            values = delta.filled(np.nan).astype("float32")
+            values[~np.isfinite(values)] = np.nan
+            profile = future.profile.copy()
+            profile.update(dtype="float32", count=1, nodata=np.nan, compress="deflate")
+            change_folder.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(output_path, "w", **profile) as dst:
+                dst.write(values, 1)
+                dst.update_tags(change_type="scenario_minus_baseline", baseline_raster=str(baseline_path),
+                                projection_raster=str(future_path), variable="SPI12", statistic=stat)
+        if verbose:
+            print(f"[SPI12 CHANGE CREATED] {output_path.name}")
 
 
 # =============================================================================
@@ -50,6 +157,10 @@ def _clean_raster_name(raster_path: Path) -> str:
         TXge35_Mean_ssp245_2040_2060.tif
         -> TXge35 | Mean | SSP245 | 2040-2060
 
+    Change naming convention:
+        TXge35_Change_Min_ssp245_2040_2059.tif
+        -> TXge35 | Change in Min | SSP245 | 2040-2059
+
     Old naming convention:
         TXge35_ssp245_mid_term_ID1_ensemble_mean.tif
         -> TXge35 | SSP245 | Mid Term | Ensemble Mean
@@ -60,6 +171,25 @@ def _clean_raster_name(raster_path: Path) -> str:
     # ==================================================================
     # NEW NAMING CONVENTION
     # ==================================================================
+
+    change_match = re.match(
+        r"^(?P<variable>.+?)_Change_(?P<stat>Min|Mean|Max)_"
+        r"(?P<scenario>historical|ssp[0-9]+)_"
+        r"(?P<start_year>[0-9]{4})_(?P<end_year>[0-9]{4})"
+        r"(?:_(?P<feature_id>.+))?$",
+        stem,
+        flags=re.IGNORECASE,
+    )
+
+    if change_match is not None:
+        scenario = change_match.group("scenario")
+        scenario = scenario.upper() if scenario.lower().startswith("ssp") else scenario.capitalize()
+        return (
+            f"{change_match.group('variable')} | "
+            f"Change in {change_match.group('stat').capitalize()} | "
+            f"{scenario} | "
+            f"{change_match.group('start_year')}-{change_match.group('end_year')}"
+        )
 
     new_match = re.match(
         r"^(?P<variable>.+?)_"
@@ -231,6 +361,11 @@ def plot_ensemble_raster(
     title: str | None = None,
     boundary_linewidth: float = 1.5,
     show: bool = False,
+    flood_extent_path: str | Path | None = None,
+    bushfire_prone_path: str | Path | None = None,
+    flood_color: str = "lightskyblue",
+    bushfire_color: str = "yellow",
+    overlay_alpha: float = 0.22,
 ) -> Path:
     """
     Plot one NARCliM ensemble-statistic raster and overlay the study boundary.
@@ -267,16 +402,27 @@ def plot_ensemble_raster(
     value_min = float(np.nanmin(valid_values))
     value_max = float(np.nanmax(valid_values))
 
+    # Change maps show future minus baseline; zero is the neutral midpoint.
+    is_change = _is_change_raster(raster_path)
+    variable, variable_label, unit = _variable_info(raster_path)
+    if is_change:
+        colour_limit = max(abs(value_min), abs(value_max))
+        plot_vmin, plot_vmax = -colour_limit, colour_limit
+        plot_cmap = ("RdBu" if variable.lower() == "r20mm" else "RdBu_r") if cmap == DEFAULT_CMAP else cmap
+    else:
+        plot_vmin, plot_vmax = value_min, value_max
+        plot_cmap = "RdYlBu" if variable.lower() == "r20mm" and cmap == DEFAULT_CMAP else cmap
+
     fig, ax = plt.subplots(figsize=(9, 8))
 
     image = ax.imshow(
         raster,
         extent=extent,
         origin="upper",
-        cmap=cmap,
+        cmap=plot_cmap,
         interpolation="nearest",
-        vmin=value_min,
-        vmax=value_max,
+        vmin=plot_vmin,
+        vmax=plot_vmax,
     )
 
     boundary_plot.plot(
@@ -286,13 +432,36 @@ def plot_ensemble_raster(
         linewidth=boundary_linewidth,
     )
 
+    # Optional thematic polygons use transparent fills and visible outlines.
+    overlay_legend = []
+    if flood_extent_path is not None:
+        overlay_legend.append(_overlay_layer(
+            ax, flood_extent_path, raster_crs, color=flood_color,
+            label="Flood extent", alpha=overlay_alpha, linewidth=0.9,
+        ))
+    if bushfire_prone_path is not None:
+        overlay_legend.append(_overlay_layer(
+            ax, bushfire_prone_path, raster_crs, color=bushfire_color,
+            label="Bushfire-prone area", alpha=overlay_alpha, linewidth=0.9,
+        ))
+    # Re-draw the study boundary on top of optional overlays.
+    if overlay_legend:
+        boundary_plot.plot(ax=ax, facecolor="none", edgecolor="black",
+                           linewidth=boundary_linewidth)
+        ax.legend(handles=overlay_legend, loc="upper right", fontsize=8)
+
     colour_bar = fig.colorbar(
         image,
         ax=ax,
         fraction=0.035,
         pad=0.03,
     )
-    colour_bar.set_label("Climate index value")
+    if is_change:
+        colour_bar.set_label(
+            f"Change in {variable_label} ({_period_label(raster_path)} minus baseline; {unit})"
+        )
+    else:
+        colour_bar.set_label(f"{variable_label} ({unit})")
 
     if title is None:
         title = _clean_raster_name(raster_path)
@@ -353,6 +522,12 @@ def plot_ensemble_maps(
     overwrite: bool = False,
     show: bool = False,
     verbose: bool = True,
+    flood_extent_path: str | Path | None = None,
+    bushfire_prone_path: str | Path | None = None,
+    flood_color: str = "lightskyblue",
+    bushfire_color: str = "yellow",
+    overlay_alpha: float = 0.22,
+    create_spi12_changes: bool = True,
 ) -> list[Path]:
     """
     Create maps for ensemble-statistic GeoTIFFs produced by uncertainty.py.
@@ -368,6 +543,11 @@ def plot_ensemble_maps(
     boundary_path = Path(boundary_path)
 
     climate_indices_root = input_root / climate_indices_folder
+    # Support the corrected folder name without breaking existing callers.
+    if not climate_indices_root.exists() and climate_indices_folder == "Climate_Indicies":
+        alternative_root = input_root / "Climate_Indices"
+        if alternative_root.exists():
+            climate_indices_root = alternative_root
     ensemble_folder = climate_indices_root / ensemble_folder_name
     output_folder = climate_indices_root / output_folder_name
 
@@ -384,7 +564,13 @@ def plot_ensemble_maps(
 
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    raster_paths = sorted(ensemble_folder.glob("*.tif"))
+    # Generate missing SPI12 change rasters when both historical and future
+    # ensemble statistics exist; leave existing uncertainty outputs unchanged.
+    if create_spi12_changes:
+        _create_missing_spi12_change_rasters(ensemble_folder, overwrite=False, verbose=verbose)
+
+    # Discover both legacy flat outputs and new Min/Max/Mean/Change subfolders.
+    raster_paths = sorted(ensemble_folder.rglob("*.tif"))
 
     if not raster_paths:
         raise FileNotFoundError(
@@ -463,8 +649,12 @@ def plot_ensemble_maps(
                     f"_ensemble_{statistic}"
                 )
 
+                # Change files encode both the change type and its statistic.
+                change_pattern = f"_change_{statistic}_"
+
                 statistic_matches.append(
-                    (
+                    (change_pattern in stem_lower)
+                    or (
                         new_pattern
                         in stem_lower
                     )
@@ -478,7 +668,19 @@ def plot_ensemble_maps(
             ):
                 continue
 
-        output_path = output_folder / f"{raster_path.stem}.png"
+        # Mirror the ensemble-statistic subfolder layout for PNG maps.
+        category = raster_path.parent.name.capitalize()
+        if category not in {"Min", "Max", "Mean", "Change"}:
+            match = re.search(r"_Change_(Min|Mean|Max)_", raster_path.stem, re.IGNORECASE)
+            if match:
+                category = "Change"
+            else:
+                match = re.search(r"_(Min|Mean|Max)_", raster_path.stem, re.IGNORECASE)
+                if not match:
+                    match = re.search(r"_ensemble_(min|mean|max)$", raster_path.stem, re.IGNORECASE)
+                category = match.group(1).capitalize() if match else "Other"
+
+        output_path = output_folder / category / f"{raster_path.stem}.png"
 
         if output_path.exists() and not overwrite:
             if verbose:
@@ -498,6 +700,11 @@ def plot_ensemble_maps(
                 cmap=cmap,
                 dpi=dpi,
                 show=show,
+                flood_extent_path=flood_extent_path,
+                bushfire_prone_path=bushfire_prone_path,
+                flood_color=flood_color,
+                bushfire_color=bushfire_color,
+                overlay_alpha=overlay_alpha,
             )
 
             saved_maps.append(output_path)
