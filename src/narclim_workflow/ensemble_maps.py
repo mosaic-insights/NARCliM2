@@ -56,10 +56,58 @@ def _overlay_layer(ax, path, raster_crs, *, color, label, alpha, linewidth):
     if layer.crs is None:
         raise ValueError(f"Overlay has no CRS: {path}")
     layer = layer.to_crs(raster_crs)
-    # The alpha controls fill opacity; boundaries remain visible independently.
-    layer.plot(ax=ax, facecolor=color, edgecolor="none", alpha=alpha, zorder=4)
-    layer.boundary.plot(ax=ax, color=color, linewidth=linewidth, alpha=1.0, zorder=5)
-    return Patch(facecolor=color, edgecolor=color, alpha=max(alpha, 0.35), label=label)
+    geometry_types = set(layer.geometry.geom_type.dropna())
+    if geometry_types <= {"Polygon", "MultiPolygon"}:
+        # The alpha controls fill opacity; boundaries remain visible independently.
+        layer.plot(ax=ax, facecolor=color, edgecolor="none", alpha=alpha, zorder=4)
+        layer.boundary.plot(ax=ax, color=color, linewidth=linewidth, alpha=1.0, zorder=5)
+        return Patch(facecolor=color, edgecolor=color, alpha=max(alpha, 0.35), label=label)
+    if geometry_types <= {"LineString", "MultiLineString"}:
+        layer.plot(ax=ax, color=color, linewidth=linewidth, zorder=5)
+        from matplotlib.lines import Line2D
+        return Line2D([0], [0], color=color, linewidth=linewidth, label=label)
+    if geometry_types <= {"Point", "MultiPoint"}:
+        layer.plot(ax=ax, color=color, markersize=max(4, linewidth * 12), zorder=5)
+        from matplotlib.lines import Line2D
+        return Line2D([0], [0], color=color, marker="o", linestyle="None", label=label)
+    raise ValueError(f"Unsupported or mixed overlay geometry types {geometry_types}: {path}")
+
+
+def _prepare_overlays(
+    overlays: list[dict] | None,
+    *,
+    flood_extent_path: str | Path | None,
+    bushfire_prone_path: str | Path | None,
+    flood_color: str,
+    bushfire_color: str,
+    overlay_alpha: float,
+) -> list[dict]:
+    """Normalise user-defined overlays and preserve older flood/bushfire arguments.
+
+    Each overlay accepts path (required), label (optional; defaults to filename),
+    color, alpha, and linewidth. Each can be independently styled.
+    """
+    result = []
+    for item in overlays or []:
+        if not isinstance(item, dict) or not item.get("path"):
+            raise ValueError("Each overlay must be a dictionary with a 'path'.")
+        layer = dict(item)
+        layer["path"] = Path(layer["path"])
+        layer.setdefault("label", layer["path"].stem.replace("_", " "))
+        layer.setdefault("color", "yellow")
+        layer.setdefault("alpha", overlay_alpha)
+        layer.setdefault("linewidth", 0.9)
+        result.append(layer)
+
+    # Backward compatibility with the previous two dedicated overlay options.
+    if flood_extent_path is not None:
+        result.append(dict(path=Path(flood_extent_path), label="Flood extent",
+                           color=flood_color, alpha=overlay_alpha, linewidth=0.9))
+    if bushfire_prone_path is not None:
+        result.append(dict(path=Path(bushfire_prone_path), label="Bushfire-prone area",
+                           color=bushfire_color, alpha=overlay_alpha, linewidth=0.9))
+    return result
+
 
 def _create_missing_spi12_change_rasters(ensemble_folder: Path, *, overwrite: bool = False, verbose: bool = True) -> None:
     """Create SPI12 projection-minus-historical GeoTIFFs if not already available.
@@ -366,6 +414,7 @@ def plot_ensemble_raster(
     flood_color: str = "lightskyblue",
     bushfire_color: str = "yellow",
     overlay_alpha: float = 0.22,
+    overlays: list[dict] | None = None,
 ) -> Path:
     """
     Plot one NARCliM ensemble-statistic raster and overlay the study boundary.
@@ -432,22 +481,28 @@ def plot_ensemble_raster(
         linewidth=boundary_linewidth,
     )
 
-    # Optional thematic polygons use transparent fills and visible outlines.
+    # Optional overlays: any number of user-provided shapefiles, each with its
+    # own colour, transparency, outline width, and legend label. When no label
+    # is supplied, use the shapefile name (without its extension).
+    overlay_specs = _prepare_overlays(
+        overlays,
+        flood_extent_path=flood_extent_path,
+        bushfire_prone_path=bushfire_prone_path,
+        flood_color=flood_color,
+        bushfire_color=bushfire_color,
+        overlay_alpha=overlay_alpha,
+    )
     overlay_legend = []
-    if flood_extent_path is not None:
+    for overlay in overlay_specs:
         overlay_legend.append(_overlay_layer(
-            ax, flood_extent_path, raster_crs, color=flood_color,
-            label="Flood extent", alpha=overlay_alpha, linewidth=0.9,
-        ))
-    if bushfire_prone_path is not None:
-        overlay_legend.append(_overlay_layer(
-            ax, bushfire_prone_path, raster_crs, color=bushfire_color,
-            label="Bushfire-prone area", alpha=overlay_alpha, linewidth=0.9,
+            ax, overlay["path"], raster_crs,
+            color=overlay["color"], label=overlay["label"],
+            alpha=overlay["alpha"], linewidth=overlay["linewidth"],
         ))
     # Re-draw the study boundary on top of optional overlays.
     if overlay_legend:
         boundary_plot.plot(ax=ax, facecolor="none", edgecolor="black",
-                           linewidth=boundary_linewidth)
+                           linewidth=boundary_linewidth, zorder=10)
         ax.legend(handles=overlay_legend, loc="upper right", fontsize=8)
 
     colour_bar = fig.colorbar(
@@ -527,6 +582,7 @@ def plot_ensemble_maps(
     flood_color: str = "lightskyblue",
     bushfire_color: str = "yellow",
     overlay_alpha: float = 0.22,
+    overlays: list[dict] | None = None,
     create_spi12_changes: bool = True,
 ) -> list[Path]:
     """
@@ -537,6 +593,14 @@ def plot_ensemble_maps(
 
     and saves PNG maps to:
         <input_root>/<climate_indices_folder>/<output_folder_name>
+
+    Optional overlays accepts a list of dictionaries, e.g.:
+        overlays=[
+            {"path": "planning_areas.shp", "color": "yellow", "alpha": 0.15},
+            {"path": "flood.shp", "label": "Flood extent", "color": "cyan"},
+        ]
+    If label is omitted, the shapefile's stem is used in the legend.
+    The previous flood_extent_path/bushfire_prone_path arguments still work.
     """
 
     input_root = Path(input_root)
@@ -705,6 +769,7 @@ def plot_ensemble_maps(
                 flood_color=flood_color,
                 bushfire_color=bushfire_color,
                 overlay_alpha=overlay_alpha,
+                overlays=overlays,
             )
 
             saved_maps.append(output_path)
