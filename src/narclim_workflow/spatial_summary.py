@@ -74,7 +74,7 @@ import rasterio
 from rasterio.features import geometry_mask
 
 
-SPATIAL_SUMMARY_CODE_VERSION = "2026-09-18-optional-mean-change-fix-v7"
+SPATIAL_SUMMARY_CODE_VERSION = "2026-11-04-ensemble-subfolder-discovery-v8"
 
 SUPPORTED_GEOMETRIES = {
     "Point",
@@ -551,7 +551,14 @@ def _discover_ensemble_rasters(
         dict[str, Path],
     ] = {}
 
-    for raster_path in sorted(ensemble_folder.glob("*.tif")):
+    # Support both the original flat Ensemble_Stats layout and the new
+    # Min/, Max/, Mean/ subfolders created by uncertainty.py.
+    # Do not read Change/: changes are calculated from baseline summaries below.
+    raster_paths = list(sorted(ensemble_folder.glob("*.tif")))
+    for statistic_folder in ("Min", "Max", "Mean"):
+        raster_paths.extend(sorted((ensemble_folder / statistic_folder).glob("*.tif")))
+
+    for raster_path in raster_paths:
         parsed = _parse_ensemble_raster_name(raster_path)
 
         if parsed is None:
